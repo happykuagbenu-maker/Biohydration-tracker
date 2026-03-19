@@ -1,0 +1,28 @@
+[
+    {
+        "Record_Number": 1,
+        "Date": "2026-03-18 17:14",
+        "Username": "Bismark",
+        "Location": "Ho, Ghana",
+        "BMI": 20.81,
+        "BMI_status": "Normal weight",
+        "Activity": "Moderate",
+        "Recommended_Water_L": 2.75,
+        "Water_Taken_L": 1.09,
+        "Water_to_Add_L": 1.66,
+        "Hydration_Score": 40,
+        "Hydration_Status": "Severe Dehydration",
+        "Hydration_Risk": "HIGH",
+        "Advice": "Drink water immediately.",
+        "Sachets(500ml)": 3.3,
+        "Humidity(%)": 41,
+        "Streak_Days": 0,
+        "Drinks(ml)": {
+            "Coffee": 100.0,
+            "Tea": 100.0,
+            "Juice": 50.0,
+            "Soda": 100.0,
+            "Alcohol": 100.0
+        }
+    }
+]
