@@ -2,6 +2,8 @@ import streamlit as st
 import datetime
 import requests
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Set backend for Streamlit Cloud
 import os
 import json
 import csv
@@ -10,6 +12,15 @@ from io import StringIO
 import hashlib
 import sqlite3
 from pathlib import Path
+import time
+
+# Page config must be the first Streamlit command
+st.set_page_config(
+    page_title="BioHydration Tracker",
+    page_icon="💧",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # ---- HIDDEN API KEY (from file) ----
 _API_KEY = None
@@ -17,38 +28,43 @@ if os.path.exists("apikey.txt"):
     with open("apikey.txt", "r") as f:
         _API_KEY = f.read().strip()
 
-# Database setup
+# Database setup with error handling
 def init_db():
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    
-    # Create users table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            email TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_login TIMESTAMP
-        )
-    ''')
-    
-    # Create user settings table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS user_settings (
-            user_id INTEGER PRIMARY KEY,
-            default_city TEXT,
-            default_weight REAL,
-            default_height REAL,
-            default_age INTEGER,
-            notification_enabled BOOLEAN DEFAULT 1,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('users.db', timeout=10)
+        c = conn.cursor()
+        
+        # Create users table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                email TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP
+            )
+        ''')
+        
+        # Create user settings table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                default_city TEXT,
+                default_weight REAL,
+                default_height REAL,
+                default_age INTEGER,
+                notification_enabled BOOLEAN DEFAULT 1,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Database initialization error: {e}")
+        return False
 
 # Password hashing
 def hash_password(password):
@@ -56,9 +72,9 @@ def hash_password(password):
 
 # User authentication functions
 def register_user(username, password, email=None):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
     try:
+        conn = sqlite3.connect('users.db', timeout=10)
+        c = conn.cursor()
         password_hash = hash_password(password)
         c.execute(
             "INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)",
@@ -73,18 +89,17 @@ def register_user(username, password, email=None):
         )
         
         conn.commit()
+        conn.close()
         return True, "Registration successful!"
     except sqlite3.IntegrityError:
         return False, "Username already exists!"
     except Exception as e:
         return False, f"Registration failed: {str(e)}"
-    finally:
-        conn.close()
 
 def login_user(username, password):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
     try:
+        conn = sqlite3.connect('users.db', timeout=10)
+        c = conn.cursor()
         password_hash = hash_password(password)
         c.execute(
             "SELECT user_id, username FROM users WHERE username = ? AND password_hash = ?",
@@ -99,21 +114,25 @@ def login_user(username, password):
                 (user[0],)
             )
             conn.commit()
+            conn.close()
             return True, {"user_id": user[0], "username": user[1]}
         else:
+            conn.close()
             return False, "Invalid username or password!"
-    finally:
-        conn.close()
+    except Exception as e:
+        return False, f"Login error: {str(e)}"
 
 def get_user_settings(user_id):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
     try:
+        conn = sqlite3.connect('users.db', timeout=10)
+        c = conn.cursor()
         c.execute(
             "SELECT default_city, default_weight, default_height, default_age, notification_enabled FROM user_settings WHERE user_id = ?",
             (user_id,)
         )
         settings = c.fetchone()
+        conn.close()
+        
         if settings:
             return {
                 "default_city": settings[0] or "",
@@ -122,14 +141,21 @@ def get_user_settings(user_id):
                 "default_age": settings[3] or 30,
                 "notification_enabled": bool(settings[4])
             }
+        return {
+            "default_city": "",
+            "default_weight": 70.0,
+            "default_height": 1.75,
+            "default_age": 30,
+            "notification_enabled": True
+        }
+    except Exception as e:
+        st.error(f"Error loading settings: {e}")
         return None
-    finally:
-        conn.close()
 
 def update_user_settings(user_id, settings):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
     try:
+        conn = sqlite3.connect('users.db', timeout=10)
+        c = conn.cursor()
         c.execute('''
             UPDATE user_settings 
             SET default_city = ?, default_weight = ?, default_height = ?, default_age = ?, notification_enabled = ?
@@ -143,12 +169,11 @@ def update_user_settings(user_id, settings):
             user_id
         ))
         conn.commit()
+        conn.close()
         return True
     except Exception as e:
         st.error(f"Failed to update settings: {e}")
         return False
-    finally:
-        conn.close()
 
 # User-specific data functions
 def get_user_data_file(user_id):
@@ -160,8 +185,8 @@ def load_user_history(user_id):
         if os.path.exists(data_file):
             with open(data_file, "r") as f:
                 return json.load(f)
-    except:
-        pass
+    except Exception as e:
+        st.error(f"Error loading history: {e}")
     return []
 
 def save_user_history(user_id, history):
@@ -169,8 +194,8 @@ def save_user_history(user_id, history):
     try:
         with open(data_file, "w") as f:
             json.dump(history, f, indent=4)
-    except:
-        pass
+    except Exception as e:
+        st.error(f"Error saving history: {e}")
 
 def load_user_streak(user_id):
     streak_file = f"user_streak_{user_id}.json"
@@ -231,8 +256,8 @@ def get_weather_humidity(city):
             humidity = response.get("main", {}).get("humidity", 50)
             temp = response.get("main", {}).get("temp", None)
             return humidity, temp
-    except:
-        st.warning("⚠ Failed to get humidity from API. Using default 50%.")
+    except Exception as e:
+        st.warning(f"⚠ Failed to get humidity from API: {e}")
     return 50, None
 
 def drinks_hydration_adjustment(drinks):
@@ -285,54 +310,59 @@ def show_login_page():
     st.title("💧 BioHydration Tracker")
     st.markdown("---")
     
-    tab1, tab2 = st.tabs(["🔐 Login", "📝 Register"])
+    col1, col2, col3 = st.columns([1, 2, 1])
     
-    with tab1:
-        st.header("Login to Your Account")
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Login")
-            
-            if submitted:
-                if username and password:
-                    success, result = login_user(username, password)
-                    if success:
-                        st.session_state.authenticated = True
-                        st.session_state.user = result
-                        st.session_state.user_settings = get_user_settings(result["user_id"])
-                        st.rerun()
-                    else:
-                        st.error(result)
-                else:
-                    st.warning("Please fill in all fields")
-    
-    with tab2:
-        st.header("Create New Account")
-        with st.form("register_form"):
-            new_username = st.text_input("Choose Username")
-            new_password = st.text_input("Choose Password", type="password")
-            confirm_password = st.text_input("Confirm Password", type="password")
-            email = st.text_input("Email (optional)")
-            
-            submitted = st.form_submit_button("Register")
-            
-            if submitted:
-                if new_username and new_password:
-                    if new_password == confirm_password:
-                        if len(new_password) >= 6:
-                            success, message = register_user(new_username, new_password, email)
+    with col2:
+        tab1, tab2 = st.tabs(["🔐 Login", "📝 Register"])
+        
+        with tab1:
+            st.header("Login to Your Account")
+            with st.form("login_form"):
+                username = st.text_input("Username")
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Login", use_container_width=True)
+                
+                if submitted:
+                    if username and password:
+                        with st.spinner("Logging in..."):
+                            success, result = login_user(username, password)
                             if success:
-                                st.success(message)
-                                st.info("Please login with your new account")
+                                st.session_state.authenticated = True
+                                st.session_state.user = result
+                                st.session_state.user_settings = get_user_settings(result["user_id"])
+                                st.rerun()
                             else:
-                                st.error(message)
-                        else:
-                            st.warning("Password must be at least 6 characters")
+                                st.error(result)
                     else:
-                        st.warning("Passwords do not match")
-                else:
-                    st.warning("Please fill in all required fields")
+                        st.warning("Please fill in all fields")
+        
+        with tab2:
+            st.header("Create New Account")
+            with st.form("register_form"):
+                new_username = st.text_input("Choose Username")
+                new_password = st.text_input("Choose Password", type="password")
+                confirm_password = st.text_input("Confirm Password", type="password")
+                email = st.text_input("Email (optional)")
+                
+                submitted = st.form_submit_button("Register", use_container_width=True)
+                
+                if submitted:
+                    if new_username and new_password:
+                        if new_password == confirm_password:
+                            if len(new_password) >= 6:
+                                with st.spinner("Creating account..."):
+                                    success, message = register_user(new_username, new_password, email)
+                                    if success:
+                                        st.success(message)
+                                        st.info("Please login with your new account")
+                                    else:
+                                        st.error(message)
+                            else:
+                                st.warning("Password must be at least 6 characters")
+                        else:
+                            st.warning("Passwords do not match")
+                    else:
+                        st.warning("Please fill in all required fields")
 
 def show_settings_page():
     st.header("⚙️ User Settings")
@@ -350,7 +380,8 @@ def show_settings_page():
                     "Default Weight (kg)", 
                     min_value=20.0, 
                     max_value=300.0, 
-                    value=st.session_state.user_settings.get("default_weight", 70.0)
+                    value=float(st.session_state.user_settings.get("default_weight", 70.0)),
+                    step=0.1
                 )
             
             with col2:
@@ -358,14 +389,15 @@ def show_settings_page():
                     "Default Height (m)", 
                     min_value=1.0, 
                     max_value=2.5, 
-                    value=st.session_state.user_settings.get("default_height", 1.75),
-                    format="%.2f"
+                    value=float(st.session_state.user_settings.get("default_height", 1.75)),
+                    format="%.2f",
+                    step=0.01
                 )
                 default_age = st.number_input(
                     "Default Age", 
                     min_value=1, 
                     max_value=120, 
-                    value=st.session_state.user_settings.get("default_age", 30)
+                    value=int(st.session_state.user_settings.get("default_age", 30))
                 )
             
             notification_enabled = st.checkbox(
@@ -373,7 +405,9 @@ def show_settings_page():
                 value=st.session_state.user_settings.get("notification_enabled", True)
             )
             
-            submitted = st.form_submit_button("Save Settings")
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col2:
+                submitted = st.form_submit_button("💾 Save Settings", use_container_width=True)
             
             if submitted:
                 new_settings = {
@@ -386,7 +420,8 @@ def show_settings_page():
                 
                 if update_user_settings(st.session_state.user["user_id"], new_settings):
                     st.session_state.user_settings = new_settings
-                    st.success("Settings saved successfully!")
+                    st.success("✅ Settings saved successfully!")
+                    time.sleep(1)
                     st.rerun()
 
 # Main app interface
@@ -395,8 +430,8 @@ def show_main_app():
     with st.sidebar:
         st.title(f"👋 Welcome, {st.session_state.user['username']}!")
         
-        if st.button("🚪 Logout"):
-            for key in ['authenticated', 'user', 'user_settings', 'history']:
+        if st.button("🚪 Logout", use_container_width=True):
+            for key in ['authenticated', 'user', 'user_settings', 'history', 'current_record']:
                 if key in st.session_state:
                     del st.session_state[key]
             st.rerun()
@@ -410,18 +445,20 @@ def show_main_app():
         settings = st.session_state.user_settings
         
         age = st.number_input("Age", min_value=1, max_value=120, 
-                             value=settings.get("default_age", 30) if settings else 30)
+                             value=int(settings.get("default_age", 30)) if settings else 30)
         weight = st.number_input("Weight (kg)", min_value=20.0, max_value=300.0, 
-                                value=settings.get("default_weight", 70.0) if settings else 70.0)
+                                value=float(settings.get("default_weight", 70.0)) if settings else 70.0,
+                                step=0.1)
         height = st.number_input("Height (m)", min_value=1.0, max_value=2.5, 
-                                value=settings.get("default_height", 1.75) if settings else 1.75)
+                                value=float(settings.get("default_height", 1.75)) if settings else 1.75,
+                                format="%.2f", step=0.01)
         
         st.markdown("---")
         st.header("📍 Location")
         city = st.text_input("City", 
                             value=settings.get("default_city", "Accra,GH") if settings else "Accra,GH")
         
-        if st.button("🌤️ Get Weather"):
+        if st.button("🌤️ Get Weather", use_container_width=True):
             with st.spinner("Fetching weather data..."):
                 humidity, temp = get_weather_humidity(city)
                 st.session_state.humidity = humidity
@@ -433,14 +470,14 @@ def show_main_app():
                 st.session_state.temp = None
         
         st.markdown("---")
-        if st.button("⚙️ Open Full Settings"):
+        if st.button("⚙️ Open Full Settings", use_container_width=True):
             st.session_state.show_settings = True
             st.rerun()
 
     # Main content
     if st.session_state.get('show_settings', False):
         show_settings_page()
-        if st.button("← Back to Dashboard"):
+        if st.button("← Back to Dashboard", use_container_width=True):
             st.session_state.show_settings = False
             st.rerun()
     else:
@@ -481,7 +518,7 @@ def show_main_app():
             
             water_taken_ml = st.number_input("Water taken today (ml)", min_value=0.0, value=1000.0, step=100.0)
 
-            if st.button("Calculate Hydration", type="primary"):
+            if st.button("💧 Calculate Hydration", type="primary", use_container_width=True):
                 # Calculate everything
                 water_taken = water_taken_ml / 1000 + drinks_hydration_adjustment(drinks)
                 bmi = calculate_bmi(weight, height)
@@ -531,6 +568,9 @@ def show_main_app():
                 # Save to user's history
                 st.session_state.history.append(st.session_state.current_record)
                 save_user_history(st.session_state.user["user_id"], st.session_state.history)
+                
+                st.success("✅ Calculation complete!")
+                st.rerun()
 
         with col2:
             if st.session_state.get('current_record'):
@@ -547,6 +587,7 @@ def show_main_app():
                 with metric_col3:
                     st.metric("Recommended", f"{record['Recommended_Water_L']}L")
                 
+                # Progress bar
                 st.progress(record['Hydration_Score'] / 100)
                 
                 # Status cards
@@ -559,17 +600,21 @@ def show_main_app():
                     st.warning(f"**Streak:** {record['Streak_Days']} days 🔥")
                 
                 # Chart
-                fig1, ax1 = plt.subplots(figsize=(6, 4))
-                labels = ["Water Taken", "Recommended"]
-                values = [record['Water_Taken_L'], record['Recommended_Water_L']]
-                colors = ["#1f77b4", "#ff7f0e"]
-                bars = ax1.bar(labels, values, color=colors, edgecolor='black', alpha=0.85)
-                for i, v in enumerate(values):
-                    ax1.text(i, v + 0.05, f"{v} L", ha='center', fontweight='bold')
-                ax1.set_ylabel("Liters")
-                ax1.grid(axis='y', linestyle='--', alpha=0.6)
-                st.pyplot(fig1)
-                plt.close()
+                try:
+                    fig1, ax1 = plt.subplots(figsize=(6, 4))
+                    labels = ["Water Taken", "Recommended"]
+                    values = [record['Water_Taken_L'], record['Recommended_Water_L']]
+                    colors = ["#1f77b4", "#ff7f0e"]
+                    bars = ax1.bar(labels, values, color=colors, edgecolor='black', alpha=0.85)
+                    for i, v in enumerate(values):
+                        ax1.text(i, v + 0.05, f"{v} L", ha='center', fontweight='bold')
+                    ax1.set_ylabel("Liters")
+                    ax1.set_title("Daily Hydration Comparison")
+                    ax1.grid(axis='y', linestyle='--', alpha=0.6)
+                    st.pyplot(fig1)
+                    plt.close(fig1)
+                except Exception as e:
+                    st.error(f"Could not create chart: {e}")
 
                 if sodium_reflux:
                     with st.expander("💊 Sodium Reflux Tips"):
@@ -585,31 +630,36 @@ def show_main_app():
             
             # Show history chart
             if len(st.session_state.history) > 0:
-                fig2, ax2 = plt.subplots(figsize=(10, 5))
-                dates = [r.get("Date", "")[:10] for r in st.session_state.history[-10:]]  # Last 10 entries
-                taken = [r.get("Water_Taken_L", 0) for r in st.session_state.history[-10:]]
-                recommended = [r.get("Recommended_Water_L", 0) for r in st.session_state.history[-10:]]
-                
-                ax2.plot(range(len(dates)), taken, label="Water Taken 💧", 
-                        color="#1f77b4", linewidth=2, marker='o')
-                ax2.plot(range(len(dates)), recommended, label="Recommended Water 💦", 
-                        color="#ff7f0e", linewidth=2, linestyle='--', marker='s')
-                ax2.set_xticks(range(len(dates)))
-                ax2.set_xticklabels(dates, rotation=45, ha='right')
-                ax2.set_ylabel("Liters")
-                ax2.set_title("Your Hydration History (Last 10 entries)")
-                ax2.grid(True, linestyle='--', alpha=0.5)
-                ax2.legend()
-                plt.tight_layout()
-                st.pyplot(fig2)
-                plt.close()
+                try:
+                    fig2, ax2 = plt.subplots(figsize=(10, 5))
+                    # Get last 10 entries or all if less than 10
+                    recent_history = st.session_state.history[-10:]
+                    dates = [r.get("Date", "")[:10] for r in recent_history]
+                    taken = [r.get("Water_Taken_L", 0) for r in recent_history]
+                    recommended = [r.get("Recommended_Water_L", 0) for r in recent_history]
+                    
+                    ax2.plot(range(len(dates)), taken, label="Water Taken 💧", 
+                            color="#1f77b4", linewidth=2, marker='o')
+                    ax2.plot(range(len(dates)), recommended, label="Recommended Water 💦", 
+                            color="#ff7f0e", linewidth=2, linestyle='--', marker='s')
+                    ax2.set_xticks(range(len(dates)))
+                    ax2.set_xticklabels(dates, rotation=45, ha='right')
+                    ax2.set_ylabel("Liters")
+                    ax2.set_title("Your Hydration History (Last 10 entries)")
+                    ax2.grid(True, linestyle='--', alpha=0.5)
+                    ax2.legend()
+                    plt.tight_layout()
+                    st.pyplot(fig2)
+                    plt.close(fig2)
+                except Exception as e:
+                    st.error(f"Could not create history chart: {e}")
 
             # Export options
             st.subheader("📥 Export Your Data")
             col_export1, col_export2 = st.columns(2)
             
             with col_export1:
-                if st.button("Export Current Record"):
+                if st.button("📄 Export Current Record", use_container_width=True):
                     if st.session_state.get('current_record'):
                         output = StringIO()
                         writer = csv.writer(output)
@@ -621,14 +671,15 @@ def show_main_app():
                         
                         csv_data = output.getvalue()
                         st.download_button(
-                            label="Download CSV",
+                            label="⬇️ Download CSV",
                             data=csv_data,
                             file_name=f"{st.session_state.user['username']}_hydration_report.csv",
-                            mime="text/csv"
+                            mime="text/csv",
+                            use_container_width=True
                         )
             
             with col_export2:
-                if st.button("Export All History"):
+                if st.button("📊 Export All History", use_container_width=True):
                     # Flatten history for export
                     flat_history = []
                     for record in st.session_state.history:
@@ -641,16 +692,19 @@ def show_main_app():
                     df = pd.DataFrame(flat_history)
                     csv_data = df.to_csv(index=False)
                     st.download_button(
-                        label="Download All History",
+                        label="⬇️ Download All History",
                         data=csv_data,
                         file_name=f"{st.session_state.user['username']}_complete_history.csv",
-                        mime="text/csv"
+                        mime="text/csv",
+                        use_container_width=True
                     )
 
 # Main app
 def main():
     # Initialize database
-    init_db()
+    if 'db_initialized' not in st.session_state:
+        if init_db():
+            st.session_state.db_initialized = True
     
     # Initialize session state
     if 'authenticated' not in st.session_state:
